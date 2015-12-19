@@ -27,7 +27,9 @@
 -module(oauth2c).
 
 -export([
-         retrieve_access_token/4, retrieve_access_token/5
+         retrieve_access_token/4
+         ,retrieve_access_token/5
+         ,retrieve_access_token/7
          ,request/3
          ,request/4
          ,request/5
@@ -45,7 +47,8 @@
         refresh_token = undefined :: binary() | undefined,
         id            = undefined :: binary() | undefined,
         secret        = undefined :: binary() | undefined,
-        scope         = undefined :: binary() | undefined
+        scope         = undefined :: binary() | undefined,
+        redirect_uri  = undefined :: binary() | undefined
 }).
 
 -type method()         :: head | get | put | post | trace | options | delete.
@@ -76,7 +79,7 @@
     ID     :: binary(),
     Secret :: binary().
 retrieve_access_token(Type, Url, ID, Secret) ->
-    retrieve_access_token(Type, Url, ID, Secret, undefined).
+    retrieve_access_token(Type, Url, ID, Secret, undefined, undefined, undefined).
 
 -spec retrieve_access_token(Type, URL, ID, Secret, Scope) ->
     {ok, Headers::headers(), #client{}} | {error, Reason :: binary()} when
@@ -86,12 +89,26 @@ retrieve_access_token(Type, Url, ID, Secret) ->
     Secret :: binary(),
     Scope  :: binary() | undefined.
 retrieve_access_token(Type, Url, ID, Secret, Scope) ->
+    retrieve_access_token(Type, Url, ID, Secret, Scope, undefined, undefined).
+
+-spec retrieve_access_token(Type, URL, ID, Secret, Scope, Code, RedirectUri) ->
+    {ok, Headers::headers(), #client{}} | {error, Reason :: binary()} when
+    Type        :: at_type(),
+    URL         :: url(),
+    ID          :: binary(),
+    Secret      :: binary(),
+    Scope       :: binary() | undefined,
+    Code        :: binary() | undefined,
+    RedirectUri :: binary() | undefined.
+retrieve_access_token(Type, Url, ID, Secret, Scope, Code, RedirectUri) ->
     Client = #client{
-                     grant_type = Type
-                     ,auth_url  = Url
-                     ,id        = ID
-                     ,secret    = Secret
-                     ,scope     = Scope
+                     grant_type     = Type
+                     ,auth_url      = Url
+                     ,id            = ID
+                     ,secret        = Secret
+                     ,scope         = Scope
+                     ,access_token  = Code
+                     ,redirect_uri  = RedirectUri
                     },
     do_retrieve_access_token(Client).
 
@@ -155,10 +172,7 @@ do_retrieve_access_token(#client{grant_type = <<"password">>} = Client) ->
                 ,{<<"username">>, Client#client.id}
                 ,{<<"password">>, Client#client.secret}
                ],
-    Payload = case Client#client.scope of
-                 undefined -> Payload0;
-                 Scope -> [{<<"scope">>, Scope}|Payload0]
-              end,
+    Payload = append_key(<<"scope">>, Client#client.scope, Payload0),
     case restc:request(post, percent, Client#client.auth_url, [200], [], Payload) of
         {ok, _, Headers, Body} ->
             AccessToken = proplists:get_value(<<"access_token">>, Body),
@@ -191,12 +205,7 @@ do_retrieve_access_token(#client{grant_type = <<"password">>} = Client) ->
 do_retrieve_access_token(#client{grant_type = <<"client_credentials">>,
                                  id = Id, secret = Secret} = Client) ->
     Payload0 = [{<<"grant_type">>, Client#client.grant_type}],
-    Payload = case Client#client.scope of
-                  undefined ->
-                      Payload0;
-                  Scope ->
-                      [{<<"scope">>, Scope}|Payload0]
-              end,
+    Payload = append_key(<<"scope">>, Client#client.scope, Payload0),
     Auth = base64:encode(<<Id/binary, ":", Secret/binary>>),
     Header = [{<<"Authorization">>, <<"Basic ", Auth/binary>>}],
     case restc:request(post, percent, Client#client.auth_url,
@@ -218,6 +227,51 @@ do_retrieve_access_token(#client{grant_type = <<"client_credentials">>,
             {error, Reason};
         {error, Reason} ->
             {error, Reason}
+    end;
+do_retrieve_access_token(#client{grant_type = <<"authorization_code">>,
+                                 id = Id, secret = Secret} = Client) ->
+    Payload0 = [{<<"grant_type">>, Client#client.grant_type}],
+    Payload = append_key(<<"redirect_uri">>, Client#client.redirect_uri, 
+                append_key(<<"code">>, Client#client.access_token, 
+                    append_key(<<"scope">>, Client#client.scope, 
+                        Payload0
+                        )
+                    )
+                ),
+    Auth = base64:encode(<<Id/binary, ":", Secret/binary>>),
+    Header = [{<<"Authorization">>, <<"Basic ", Auth/binary>>}],
+    case restc:request(post, percent, Client#client.auth_url,
+                       [200], Header, Payload) of
+        {ok, _, Headers, Body} ->
+            AccessToken = proplists:get_value(<<"access_token">>, Body),
+            RefreshToken = proplists:get_value(<<"refresh_token">>, Body),
+            TokenType = proplists:get_value(<<"token_type">>, Body, ""),
+            Result = case RefreshToken of
+                undefined ->
+                    #client{
+                            grant_type    = Client#client.grant_type
+                            ,auth_url     = Client#client.auth_url
+                            ,access_token = AccessToken
+                            ,token_type   = get_token_type(TokenType)
+                            ,id           = Client#client.id
+                            ,secret       = Client#client.secret
+                            ,scope        = Client#client.scope
+                            };
+                _ ->
+                    #client{
+                            grant_type     = Client#client.grant_type
+                            ,auth_url      = Client#client.auth_url
+                            ,access_token  = AccessToken
+                            ,token_type   = get_token_type(TokenType)
+                            ,refresh_token = RefreshToken
+                            ,scope         = Client#client.scope
+                            }
+            end,
+            {ok, Headers, Result};
+        {error, _, _, Reason} ->
+            {error, Reason};
+        {error, Reason} ->
+            {error, Reason}
     end.
 
 -spec get_token_type(binary()) -> token_type().
@@ -232,6 +286,16 @@ do_request(Method, Type, Url, Expect, Headers, Body, Client) ->
     Headers2 = add_auth_header(Headers, Client),
     {restc:request(Method, Type, Url, Expect, Headers2, Body), Client}.
 
-add_auth_header(Headers, #client{access_token = AccessToken}) ->
-    AH = {<<"Authorization">>, <<"token ", AccessToken/binary>>},
-    [AH | proplists:delete(<<"Authorization">>, Headers)].
+add_auth_header(Headers, #client{access_token = AccessToken, token_type = TokenType}) ->
+    Prefix = autorization_prefix(TokenType),
+    AH = {"Authorization", binary_to_list(<<Prefix/binary, " ", AccessToken/binary>>)},
+    [AH | proplists:delete("Authorization", Headers)].
+
+-spec autorization_prefix(token_type()) -> binary().
+autorization_prefix(bearer) -> <<"Bearer">>;
+autorization_prefix(unsupported) -> <<"token">>.
+
+-spec append_key(binary(), binary() | undefined, proplist()) -> proplist().
+append_key(_Key, undefined, Payload) -> Payload;
+append_key(Key, Value, Payload) -> 
+    [{Key, Value}|Payload].
