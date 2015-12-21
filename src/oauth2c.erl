@@ -239,7 +239,8 @@ do_retrieve_access_token(#client{grant_type = <<"authorization_code">>,
                     )
                 ),
     Auth = base64:encode(<<Id/binary, ":", Secret/binary>>),
-    Header = [{<<"Authorization">>, <<"Basic ", Auth/binary>>}],
+    Header = [{<<"Authorization">>, <<"Basic ", Auth/binary>>}
+            , {<<"Accept">>, <<"application/json">>}],
     case restc:request(post, percent, Client#client.auth_url,
                        [200], Header, Payload) of
         {ok, _, Headers, Body} ->
