@@ -35,6 +35,7 @@
          ,request/5
          ,request/6
          ,request/7
+         ,request/8
         ]).
 
 -define(DEFAULT_ENCODING, json).
@@ -63,6 +64,8 @@
 -type property()       :: atom() | tuple().
 -type proplist()       :: [property()].
 -type body()           :: proplist().
+-type options()        :: [option()].
+-type option()         :: {atom(), term()} | atom().
 -type restc_response() :: {ok, Status::status_code(), Headers::headers(), Body::body()} |
                           {error, Status::status_code(), Headers::headers(), Body::body()} |
                           {error, Reason::reason()}.
@@ -155,10 +158,22 @@ request(Method, Type, Url, Expect, Headers, Client) ->
     Body    :: body(),
     Client  :: #client{}.
 request(Method, Type, Url, Expect, Headers, Body, Client) ->
-    case do_request(Method, Type, Url, Expect, Headers, Body, Client) of
+    request(Method, Type, Url, Expect, Headers, Body, Client, []).
+
+-spec request(Method, Type, Url, Expect, Headers, Body, Client, Options) -> Response::response() when
+    Method  :: method(),
+    Type    :: content_type(),
+    Url     :: url(),
+    Expect  :: status_codes(),
+    Headers :: headers(),
+    Body    :: body(),
+    Client  :: #client{},
+    Options :: options().
+request(Method, Type, Url, Expect, Headers, Body, Client, Options) ->
+    case do_request(Method, Type, Url, Expect, Headers, Body, Client, Options) of
         {{_, 401, _, _}, Client2} ->
             {ok, _RetrHeaders, Client3} = do_retrieve_access_token(Client2),
-            do_request(Method, Type, Url, Expect, Headers, Body, Client3);
+            do_request(Method, Type, Url, Expect, Headers, Body, Client3, Options);
         Result -> Result
     end.
 
@@ -283,9 +298,9 @@ get_token_type(Type) ->
 get_str_token_type("bearer") -> bearer;
 get_str_token_type(_Else) -> unsupported.
 
-do_request(Method, Type, Url, Expect, Headers, Body, Client) ->
+do_request(Method, Type, Url, Expect, Headers, Body, Client, Options) ->
     Headers2 = add_auth_header(Headers, Client),
-    {restc:request(Method, Type, Url, Expect, Headers2, Body), Client}.
+    {restc:request(Method, Type, Url, Expect, Headers2, Body, Options), Client}.
 
 add_auth_header(Headers, #client{access_token = AccessToken, token_type = TokenType}) ->
     Prefix = autorization_prefix(TokenType),
