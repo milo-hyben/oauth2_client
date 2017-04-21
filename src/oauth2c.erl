@@ -240,8 +240,7 @@ do_retrieve_access_token(#client{grant_type = <<"client_credentials">>,
     case restc:request(post, percent, Client#client.auth_url,
                        [200], Header, Payload, Options) of
         {ok, _, Headers, Body} ->
-            AccessToken = proplists:get_value(<<"access_token">>, Body),
-            TokenType = proplists:get_value(<<"token_type">>, Body, ""),
+            {AccessToken, _RefreshToken, TokenType } = extract_tokens(Body),
             Result = #client{
                              grant_type    = Client#client.grant_type
                              ,auth_url     = Client#client.auth_url
@@ -273,9 +272,7 @@ do_retrieve_access_token(#client{grant_type = <<"authorization_code">>,
     case restc:request(post, percent, Client#client.auth_url,
                        [200], Header, Payload, Options) of
         {ok, _, Headers, Body} ->
-            AccessToken = proplists:get_value(<<"access_token">>, Body),
-            RefreshToken = proplists:get_value(<<"refresh_token">>, Body),
-            TokenType = proplists:get_value(<<"token_type">>, Body, ""),
+            {AccessToken, RefreshToken, TokenType } = extract_tokens(Body),
             Result = case RefreshToken of
                 undefined ->
                     #client{
@@ -329,3 +326,21 @@ autorization_prefix(unsupported) -> <<"token">>.
 append_key(_Key, undefined, Payload) -> Payload;
 append_key(Key, Value, Payload) -> 
     [{Key, Value}|Payload].
+
+-spec extract_tokens(binary() | proplist()) -> { binary(), binary() | undefined, binary()}.
+extract_tokens(Body) when is_list(Body) -> 
+    AccessToken = proplists:get_value(<<"access_token">>, Body),
+    RefreshToken = proplists:get_value(<<"refresh_token">>, Body),
+    TokenType = proplists:get_value(<<"token_type">>, Body, ""),
+    {AccessToken, RefreshToken, TokenType };
+extract_tokens(Body) -> 
+    Body2 = mochiweb_util:parse_qs(Body),
+    AccessToken = convert_to_binary(proplists:get_value("access_token", Body2)),
+    RefreshToken = convert_to_binary(proplists:get_value("refresh_token", Body2, undefined)),
+    TokenType = convert_to_binary(proplists:get_value("token_type", Body2, "")),
+    {AccessToken, RefreshToken, TokenType }.
+
+-spec convert_to_binary(string() | undefined) -> binary()  | undefined.
+convert_to_binary(undefined) -> undefined;
+convert_to_binary(A) -> list_to_binary(A).
+
